@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UbaiduTech Memory Match</title>
+    <!-- Load Tailwind CSS for utility classes and the Inter font -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Tone.js for sound effects -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <style>
+        /* Custom Theme Colors and Glass/Water Effects */
+        :root {
+            --color-bg-dark: #0A0F1A; /* Deep Blue-Black */
+            --color-accent-pink: #D9027D; /* Dark Pink */
+            --color-glass-bg: rgba(255, 255, 255, 0.08); /* Light transparency for glass */
+            --color-text-light: #F0F4F8;
+            --color-highlight-blue: #00BFFF; /* For database info */
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--color-bg-dark);
+            color: var(--color-text-light);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container-glass {
+            background: var(--color-glass-bg);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px); /* The Glass effect */
+            -webkit-backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); /* Water Shadow effect */
+            border-radius: 20px;
+            padding: 2rem;
+            max-width: 95vw;
+            width: 500px;
+        }
+
+        /* Card Styling */
+        .card-grid {
+            display: grid;
+            gap: 0.5rem;
+            margin-top: 1.5rem;
+            width: 100%;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .card {
+            aspect-ratio: 1 / 1;
+            transform-style: preserve-3d;
+            transition: transform 0.5s ease;
+            position: relative;
+            cursor: pointer;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .card.flipped {
+            transform: rotateY(180deg);
+        }
+        
+        /* Matched cards stay flipped and have a subtle glow */
+        .card.matched {
+            box-shadow: 0 0 15px var(--color-accent-pink);
+            pointer-events: none; /* Cannot click matched cards */
+        }
+
+        .card-face, .card-back {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 8px;
+            font-size: 2.5rem; /* Large enough for emojis */
+            font-weight: bold;
+        }
+
+        .card-face {
+            background-color: var(--color-glass-bg);
+            transform: rotateY(180deg);
+            color: var(--color-text-light);
+        }
+
+        .card-back {
+            background: var(--color-accent-pink);
+            background: linear-gradient(135deg, #FF69B4, var(--color-accent-pink));
+            color: var(--color-text-light);
+            border: 3px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Button Styling */
+        .btn-primary {
+            background-color: var(--color-accent-pink);
+            transition: all 0.2s;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+
+        .btn-primary:hover {
+            background-color: #FF69B4;
+            box-shadow: 0 0 15px var(--color-accent-pink);
+            transform: translateY(-2px);
+        }
+        
+        .btn-secondary {
+            background-color: #1a202c; /* Blackish blue */
+        }
+        
+        .btn-secondary:hover {
+            background-color: #2d3748;
+        }
+
+        /* Loading Spinner for Game Start */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid var(--color-accent-pink);
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .score-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-left: 5px solid var(--color-highlight-blue);
+        }
+    </style>
+</head>
+<body>
+
+<div id="app" class="container-glass w-full sm:w-11/12 md:w-3/4 lg:w-1/2">
+    <!-- Content will be rendered here -->
+</div>
+
+<script type="module">
+    // --- Firebase Imports ---
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- Global Firebase & App Variables ---
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-memory-app';
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    let db = null;
+    let auth = null;
+
+    // --- Tone.js Setup ---
+    let flipSynth, matchSynth, noMatchSynth, winSynth, loseSynth;
+    let bgSynth, bgLoop; // New variables for background music
+    let isAudioContextInitialized = false;
+
+    function initializeAudio() {
+        if (isAudioContextInitialized) return;
+        
+        // Ensure Tone.js is started from a user interaction
+        Tone.start();
+        isAudioContextInitialized = true;
+
+        // 1. Flip Sound (Short, subtle click/pluck)
+        flipSynth = new Tone.PluckSynth().toDestination();
+        flipSynth.volume.value = -10; 
+
+        // 2. Match Sound (Bright, positive chime - using PolySynth for chords)
+        matchSynth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.01, decay: 0.2, sustain: 0.05, release: 0.5 }
+        }).toDestination();
+        matchSynth.volume.value = -5;
+
+        // 3. No Match Sound (Low, dissonant buzz/plop)
+        noMatchSynth = new Tone.MembraneSynth().toDestination();
+        noMatchSynth.volume.value = -8;
+
+        // 4. Win Sound (Ascending arpeggio - using PolySynth for chords)
+        winSynth = new Tone.PolySynth(Tone.AMSynth).toDestination();
+        winSynth.volume.value = -5;
+
+        // 5. Lose Sound (Deep, descending tone)
+        loseSynth = new Tone.MonoSynth({
+            oscillator: { type: "square" },
+            envelope: { attack: 0.01, decay: 0.5, sustain: 0, release: 1 },
+            filterEnvelope: { octaves: 4 }
+        }).toDestination();
+        loseSynth.volume.value = -5;
+        
+        // 6. Background Music (Simple Ambient Loop)
+        bgSynth = new Tone.Synth({
+            oscillator: { type: "triangle" },
+            envelope: { attack: 2, decay: 0.1, sustain: 0.9, release: 2 }
+        }).toDestination();
+        bgSynth.volume.value = -100; // Muted initially
+        
+        // Looping pattern: plays a C2 note, then G2, repeating every 4 measures
+        bgLoop = new Tone.Loop(time => {
+            bgSynth.triggerAttackRelease("C2", "2m", time);
+            bgSynth.triggerAttackRelease("G2", "2m", time + 2);
+        }, "4m").start(0); 
+    }
+
+    function playEffect(type) {
+        if (!isAudioContextInitialized) {
+            // Safety check
+            initializeAudio(); 
+        }
+
+        switch (type) {
+            case 'flip':
+                flipSynth.triggerAttackRelease("C5", "8n");
+                break;
+            case 'match':
+                // matchSynth is now a PolySynth and can handle an array of notes (a chord)
+                matchSynth.triggerAttackRelease(["E5", "G5", "C6"], "8n");
+                break;
+            case 'nomatch':
+                noMatchSynth.triggerAttackRelease("C2", "8n");
+                break;
+            case 'win':
+                // winSynth is a PolySynth and can handle an array of notes (a chord)
+                winSynth.triggerAttackRelease(["C5", "E5", "G5", "C6"], "8n", Tone.now());
+                break;
+            case 'lose':
+                // Descending tone
+                loseSynth.triggerAttackRelease("G3", "4n", Tone.now());
+                loseSynth.triggerAttackRelease("C3", "4n", Tone.now() + 0.2);
+                break;
+        }
+    }
+
+    // --- Music Control Functions ---
+    
+    function startMusic() {
+        if (!bgSynth) initializeAudio();
+        // Ramp volume up to -15dB over 2 seconds
+        bgSynth.volume.rampTo(-15, 2); 
+        state.isMusicPlaying = true;
+        render();
+    }
+
+    function stopMusic() {
+        if (!bgSynth) initializeAudio();
+        // Ramp volume down to -100dB (effectively mute) over 1 second
+        bgSynth.volume.rampTo(-100, 1); 
+        state.isMusicPlaying = false;
+        render();
+    }
+
+    function toggleMusic() {
+        if (state.isMusicPlaying) {
+            stopMusic();
+        } else {
+            startMusic();
+        }
+    }
+
+    // --- Configuration and State ---
+    const APP_NAME = "UbaiduTech";
+    const GAME_DURATION_SECONDS = 120;
+    const CARD_EMOJIS = ['⭐', '🚀', '💡', '🎉', '🍕', '🐱', '🦋', '👑', '⚓', '🍇', '💎', '🎨', '🔥', '🌍', '👽', '🐳', '🍀', '🚲'];
+    const CARD_FLIP_DELAY_MS = 1000;
+
+    const LEVELS = {
+        1: { name: 'Beginning (4x4)', pairs: 8, cols: 4, rows: 4 },
+        2: { name: 'Advance (5x4)', pairs: 10, cols: 5, rows: 4 },
+        3: { name: 'Very Hard (6x6)', pairs: 18, cols: 6, rows: 6 },
+    };
+
+    let state = {
+        view: 'start', // 'start', 'select', 'game', 'win', 'lose', 'highscores', 'developer'
+        cards: [],
+        flippedCards: [],
+        matchedPairs: 0,
+        moves: 0,
+        timer: GAME_DURATION_SECONDS,
+        intervalId: null,
+        level: null, 
+        canFlip: true,
+        isStarting: false,
+        isMusicPlaying: false, // Default music state
+        
+        // --- Database State ---
+        userId: null,
+        isAuthReady: false,
+        highScores: {}, // Stores fetched scores: { '1': { bestMoves: 16, bestTime: 55 }, ... }
+    };
+
+    // --- Firebase Initialization and Auth ---
+
+    async function setupFirebaseAndAuth() {
+        if (!firebaseConfig || !Object.keys(firebaseConfig).length) {
+            console.error("Firebase config is missing. Cannot initialize database features.");
+            state.isAuthReady = true; // Still allow app to run without DB
+            render();
+            return;
+        }
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            if (initialAuthToken) {
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+                await signInAnonymously(auth);
+            }
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    state.userId = user.uid;
+                    state.isAuthReady = true;
+                    // Load high scores once authenticated
+                    loadHighScores(); 
+                } else {
+                    state.userId = null;
+                    state.isAuthReady = true;
+                }
+                render();
+            });
+
+        } catch (error) {
+            console.error("Firebase initialization or authentication failed:", error);
+            state.isAuthReady = true;
+            render();
+        }
+    }
+
+    function getUserDocRef(levelKey) {
+        if (!db || !state.userId) return null;
+        const basePath = `/artifacts/${appId}/users/${state.userId}/highscores`;
+        return doc(db, basePath, levelKey);
+    }
+
+    async function loadHighScores() {
+        if (!state.isAuthReady || !state.userId || !db) return;
+        
+        try {
+            // Use onSnapshot to listen for real-time updates to all level scores
+            Object.keys(LEVELS).forEach(levelKey => {
+                const docRef = getUserDocRef(levelKey);
+                if (docRef) {
+                    onSnapshot(docRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            state.highScores[levelKey] = docSnap.data();
+                        } else {
+                            // If doc doesn't exist, initialize it with null scores
+                            state.highScores[levelKey] = { bestMoves: null, bestTime: null };
+                        }
+                        // Only render if we are on the highscores view to avoid unnecessary updates
+                        if (state.view === 'highscores') render();
+                    }, (error) => {
+                        console.error(`Error listening to high score for level ${levelKey}:`, error);
+                    });
+                }
+            });
+
+        } catch (error) {
+            console.error("Error loading high scores:", error);
+        }
+    }
+
+    async function saveHighScore(levelKey, moves, time) {
+        if (!state.isAuthReady || !state.userId || !db) {
+            console.warn("Cannot save score: User not authenticated or DB not ready.");
+            return;
+        }
+        
+        const docRef = getUserDocRef(levelKey);
+        if (!docRef) return;
+
+        try {
+            const currentScore = state.highScores[levelKey] || { bestMoves: null, bestTime: null };
+            
+            let shouldUpdate = false;
+            let newData = {
+                lastUpdated: new Date().toISOString(),
+                level: levelKey
+            };
+
+            // Check for best moves
+            if (currentScore.bestMoves === null || moves < currentScore.bestMoves) {
+                newData.bestMoves = moves;
+                shouldUpdate = true;
+            } else {
+                newData.bestMoves = currentScore.bestMoves;
+            }
+
+            // Check for best time (lower time is better)
+            const timeTaken = GAME_DURATION_SECONDS - time;
+            if (currentScore.bestTime === null || timeTaken < currentScore.bestTime) {
+                newData.bestTime = timeTaken;
+                shouldUpdate = true;
+            } else {
+                newData.bestTime = currentScore.bestTime;
+            }
+
+            if (shouldUpdate) {
+                await setDoc(docRef, newData, { merge: true });
+                console.log(`High score updated for level ${levelKey}. Moves: ${newData.bestMoves}, Time: ${newData.bestTime}`);
+            } else {
+                console.log(`Current score (${moves} moves, ${timeTaken}s) did not beat the high score for level ${levelKey}.`);
+            }
+
+        } catch (error) {
+            console.error("Error saving high score:", error);
+        }
+    }
+
+    // --- Utility Functions ---
+
+    function shuffle(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+
+    function initializeCards(pairsNeeded) {
+        const selectedSymbols = CARD_EMOJIS.slice(0, pairsNeeded);
+        let symbols = [...selectedSymbols, ...selectedSymbols];
+
+        const cards = symbols.map((symbol, index) => ({
+            id: index,
+            symbol: symbol,
+            isFlipped: false,
+            isMatched: false
+        }));
+
+        return shuffle(cards);
+    }
+
+    // --- State and View Management ---
+
+    function setView(newView) {
+        state.view = newView;
+        render();
+    }
+    
+    // --- Timer Logic ---
+
+    function startTimer() {
+        // Clear any existing timer
+        if (state.intervalId) clearInterval(state.intervalId);
+
+        state.intervalId = setInterval(() => {
+            state.timer--;
+            
+            // Check for loss condition
+            if (state.timer <= 0) {
+                clearInterval(state.intervalId);
+                setView('lose');
+            }
+            
+            // Re-render only the timer display to avoid full screen update flicker
+            const timerEl = document.getElementById('timer-value');
+            if (timerEl) {
+                const minutes = Math.floor(state.timer / 60);
+                const seconds = state.timer % 60;
+                timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+
+        }, 1000);
+    }
+
+    function stopTimer() {
+        if (state.intervalId) {
+            clearInterval(state.intervalId);
+            state.intervalId = null;
+        }
+    }
+
+
+    // --- Game Logic ---
+
+    function startGame(level) {
+        stopTimer(); // Ensure any existing timer is stopped
+        
+        state.level = LEVELS[level];
+        
+        // Guard against invalid level key
+        if (!state.level) {
+            console.error(`Invalid level key provided: ${level}`);
+            setView('select');
+            return;
+        }
+
+        state.isStarting = true;
+        render(); // Show loading spinner
+
+        // Reset remaining state
+        state.cards = initializeCards(state.level.pairs);
+        state.flippedCards = [];
+        state.matchedPairs = 0;
+        state.moves = 0;
+        state.timer = GAME_DURATION_SECONDS;
+        state.canFlip = true;
+        state.isStarting = false;
+        
+        setView('game');
+        startTimer();
+    }
+
+    function checkMatch() {
+        state.canFlip = false;
+        const [id1, id2] = state.flippedCards;
+        const card1 = state.cards.find(c => c.id === id1);
+        const card2 = state.cards.find(c => c.id === id2);
+
+        if (card1.symbol === card2.symbol) {
+            // MATCH FOUND
+            card1.isMatched = true;
+            card2.isMatched = true;
+            state.matchedPairs++;
+            state.flippedCards = [];
+            state.canFlip = true;
+            
+            playEffect('match'); // Play match sound
+            
+            if (state.matchedPairs === state.level.pairs) {
+                stopTimer();
+                const levelKey = Object.keys(LEVELS).find(k => LEVELS[k] === state.level);
+                const timeRemaining = state.timer;
+                saveHighScore(levelKey, state.moves, timeRemaining); // Save the high score
+                setView('win');
+            }
+            render();
+
+        } else {
+            // NO MATCH - Flip back after delay
+            playEffect('nomatch'); // Play no match sound
+            setTimeout(() => {
+                card1.isFlipped = false;
+                card2.isFlipped = false;
+                state.flippedCards = [];
+                state.canFlip = true;
+                render();
+            }, CARD_FLIP_DELAY_MS);
+        }
+    }
+
+    function handleCardClick(cardId) {
+        // Guard clauses
+        if (!state.canFlip || state.flippedCards.includes(cardId) || state.cards.find(c => c.id === cardId).isMatched) {
+            return;
+        }
+
+        // Flip the card
+        const cardIndex = state.cards.findIndex(c => c.id === cardId);
+        state.cards[cardIndex].isFlipped = true;
+        state.flippedCards.push(cardId);
+        state.moves++;
+        
+        playEffect('flip'); // Play flip sound
+        
+        render(); // Update flipped card and moves immediately
+
+        if (state.flippedCards.length === 2) {
+            checkMatch();
+        }
+    }
+
+    // --- Rendering Functions ---
+
+    function renderHeader() {
+        if (!state.level) return ''; 
+        
+        let content = `
+            <header class="mb-6 flex justify-between items-center text-xs sm:text-base">
+                <div class="p-2 bg-black/30 rounded-lg backdrop-blur-sm">
+                    <span class="text-gray-400">Moves: </span>
+                    <span class="font-bold text-white">${state.moves}</span>
+                </div>
+                <div class="text-center">
+                    <h2 class="text-lg sm:text-xl font-bold text-white">${state.level.name}</h2>
+                    <p class="text-sm text-gray-400">Time Limit: 2:00</p>
+                </div>
+                <div class="p-2 bg-black/30 rounded-lg backdrop-blur-sm">
+                    <span class="text-gray-400">Time Left: </span>
+                    <span id="timer-value" class="font-bold text-red-400">${Math.floor(state.timer / 60)}:${(state.timer % 60).toString().padStart(2, '0')}</span>
+                </div>
+            </header>
+        `;
+        return content;
+    }
+
+    function renderCard(card) {
+        const isFlipped = card.isFlipped || card.isMatched;
+        const cardClass = `card ${isFlipped ? 'flipped' : ''} ${card.isMatched ? 'matched' : ''}`;
+        
+        return `
+            <div class="${cardClass}" onclick="handleCardClick(${card.id})">
+                <div class="card-back">?</div>
+                <div class="card-face">${card.symbol}</div>
+            </div>
+        `;
+    }
+
+    function renderGameView() {
+        if (!state.level) {
+            setView('select');
+            return '';
+        }
+
+        const gridStyle = `grid-template-columns: repeat(${state.level.cols}, 1fr);`;
+        
+        let content = `
+            ${renderHeader()}
+            <main class="card-grid" style="${gridStyle}">
+                ${state.cards.map(renderCard).join('')}
+            </main>
+            <footer class="mt-6 text-center">
+                 <button onclick="setView('select')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                    Change Level
+                </button>
+            </footer>
+        `;
+        return content;
+    }
+
+    function handleStartClick() {
+        initializeAudio();
+        setView('select');
+    }
+
+    function renderStartView() {
+        let content = `
+            <div class="text-center py-10">
+                <h1 class="text-5xl font-extrabold text-white mb-2">${APP_NAME}</h1>
+                <p class="text-2xl font-light text-gray-400 mb-10">Memory Match</p>
+                <button onclick="handleStartClick()" class="btn-primary px-10 py-4 rounded-xl font-bold text-xl text-white shadow-lg mb-6">
+                    Start Game
+                </button>
+                <div class="mt-8">
+                    <button onclick="toggleMusic()" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Music ${state.isMusicPlaying ? '🎶 ON' : '🔇 OFF'}
+                    </button>
+                </div>
+            </div>
+        `;
+        return content;
+    }
+    
+    function renderLevelSelectView() {
+        let content = `
+            <div class="text-center py-8">
+                <h2 class="text-3xl font-bold text-white mb-8">Select Game Level</h2>
+                <div class="space-y-4">
+                    ${Object.entries(LEVELS).map(([key, level]) => `
+                        <button onclick="startGame(${key})" class="btn-primary w-full px-8 py-4 rounded-xl font-bold text-lg text-white shadow-lg">
+                            Level ${key}: ${level.name}
+                        </button>
+                    `).join('')}
+                </div>
+                <footer class="mt-8 flex justify-center flex-wrap gap-4">
+                    <button onclick="setView('start')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Back to Home
+                    </button>
+                    <button onclick="setView('highscores')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        High Scores
+                    </button>
+                    <!-- Button for Developer Info -->
+                    <button onclick="setView('developer')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Developer Info
+                    </button>
+                    <!-- Music Toggle Button -->
+                    <button onclick="toggleMusic()" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Music ${state.isMusicPlaying ? '🎶 ON' : '🔇 OFF'}
+                    </button>
+                </footer>
+            </div>
+        `;
+        return content;
+    }
+    
+    function renderWinLoseView(status) {
+        stopTimer();
+        
+        if (status === 'win') {
+            playEffect('win'); // Play win sound
+        } else {
+            playEffect('lose'); // Play lose sound
+        }
+
+        const title = status === 'win' ? 'VICTORY!' : 'TIME OVER!';
+        const color = status === 'win' ? 'text-green-400' : 'text-red-400';
+        const levelKey = Object.keys(LEVELS).find(k => LEVELS[k] === state.level) || '1';
+        const finalTime = GAME_DURATION_SECONDS - state.timer;
+        const currentHighScore = state.highScores[levelKey] || {};
+        const isNewRecord = (status === 'win' && 
+                            (finalTime < currentHighScore.bestTime || currentHighScore.bestTime === null)) ||
+                            (state.moves < currentHighScore.bestMoves || currentHighScore.bestMoves === null);
+
+
+        const message = status === 'win' 
+            ? `Fantastic! You matched all ${state.level ? state.level.pairs : 'N/A'} pairs in ${state.moves} moves.` 
+            : `You didn't find all pairs in time. Try again!`;
+        
+        const recordMessage = isNewRecord && status === 'win' ? 
+            `<p class="text-yellow-400 font-bold mt-2 text-xl">NEW RECORD SET!</p>` : '';
+
+
+        let content = `
+            <div class="text-center py-10">
+                <h2 class="text-5xl font-extrabold ${color} mb-4">${title}</h2>
+                ${recordMessage}
+                <p class="text-lg text-gray-300 mb-6">${message}</p>
+                <p class="text-2xl font-bold mb-8">Stats: ${state.moves} Moves, ${finalTime} seconds</p>
+                <div class="space-y-4">
+                    <button onclick="setView('select')" class="btn-primary w-full px-8 py-4 rounded-xl font-bold text-lg text-white shadow-lg">
+                        Select New Level
+                    </button>
+                    <button onclick="startGame(${levelKey})" class="btn-secondary w-full px-8 py-4 rounded-xl font-bold text-lg text-white shadow-lg">
+                        Play Again (Same Level)
+                    </button>
+                </div>
+            </div>
+        `;
+        return content;
+    }
+
+    function formatTime(totalSeconds) {
+        if (totalSeconds === null) return 'N/A';
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    function renderHighScoresView() {
+        if (!state.isAuthReady) {
+            return `
+                <div class="text-center py-10">
+                    <h2 class="text-3xl font-bold text-white mb-4">High Scores</h2>
+                    <div class="flex justify-center mb-4"><div class="spinner"></div></div>
+                    <p class="text-gray-400">Connecting to database. Please wait...</p>
+                </div>
+            `;
+        }
+        
+        const scoreCards = Object.entries(LEVELS).map(([key, level]) => {
+            const scores = state.highScores[key];
+            const bestMoves = scores?.bestMoves !== null ? scores.bestMoves : 'N/A';
+            const bestTime = scores?.bestTime !== null ? formatTime(scores.bestTime) : 'N/A';
+
+            return `
+                <div class="score-card p-4 rounded-lg shadow-xl transition hover:shadow-2xl hover:scale-[1.02] duration-300">
+                    <h3 class="text-xl font-bold text-white mb-2">${level.name}</h3>
+                    <div class="flex justify-between text-lg text-gray-200">
+                        <span>Min Moves:</span>
+                        <span class="font-extrabold text-yellow-300">${bestMoves}</span>
+                    </div>
+                    <div class="flex justify-between text-lg text-gray-200">
+                        <span>Best Time:</span>
+                        <span class="font-extrabold text-pink-400">${bestTime}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        let content = `
+            <div class="py-8">
+                <h2 class="text-3xl font-bold text-white mb-2 text-center">🏆 Your High Scores 🏆</h2>
+                <p class="text-sm text-gray-400 text-center mb-6">User ID: <span class="text-white break-all">${state.userId || 'Not Logged In'}</span></p>
+                
+                <div class="space-y-4">
+                    ${scoreCards}
+                </div>
+                
+                <footer class="mt-8 text-center">
+                    <button onclick="setView('select')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Back to Levels
+                    </button>
+                </footer>
+            </div>
+        `;
+        return content;
+    }
+    
+    function renderDeveloperView() {
+        let content = `
+            <div class="py-8">
+                <h2 class="text-3xl font-bold text-white mb-6 text-center border-b pb-2 border-white/20">Developer Information</h2>
+                <div class="space-y-6 p-4 rounded-lg bg-black/20">
+                    <!-- Developer Details -->
+                    <div class="text-center">
+                        <p class="text-xl font-semibold text-white mb-1">Developer</p>
+                        <p class="text-2xl font-extrabold text-pink-400">Abdullah Ibrahim</p>
+                        <p class="text-lg text-gray-300">Computer Science Student at Adustech</p>
+                    </div>
+
+                    <!-- Game Description -->
+                    <div>
+                        <p class="text-xl font-semibold text-white mb-2 border-t pt-4 border-white/20">About The Game</p>
+                        <p class="text-gray-300 leading-relaxed">
+                            Memory Match is a classic concentration game where players must flip two cards at a time to find matching pairs of symbols. 
+                            The goal is to match all pairs in the fewest moves possible before the time limit expires. 
+                            It serves as a fun and engaging way to challenge your short-term memory and focus across various difficulty levels.
+                        </p>
+                    </div>
+                </div>
+                <footer class="mt-8 text-center">
+                    <button onclick="setView('select')" class="btn-secondary px-6 py-2 rounded-lg font-semibold text-white shadow-md transition duration-200">
+                        Back to Levels
+                    </button>
+                </footer>
+            </div>
+        `;
+        return content;
+    }
+
+    function renderLoading() {
+        const levelName = state.level ? state.level.name : 'Game';
+        
+        return `
+            <div class="text-center py-10">
+                <div class="flex justify-center mb-4">
+                    <div class="spinner"></div>
+                </div>
+                <h2 class="text-2xl font-bold text-white">Shuffling Cards...</h2>
+                <p class="text-gray-400">Preparing the ${levelName} challenge.</p>
+            </div>
+        `;
+    }
+
+    function render() {
+        const appEl = document.getElementById('app');
+        if (!appEl) return;
+
+        let html = '';
+
+        if (state.isStarting) {
+            html = renderLoading();
+        } else {
+            switch (state.view) {
+                case 'start':
+                    html = renderStartView();
+                    break;
+                case 'select':
+                    html = renderLevelSelectView();
+                    break;
+                case 'game':
+                    html = renderGameView();
+                    break;
+                case 'win':
+                    html = renderWinLoseView('win');
+                    break;
+                case 'lose':
+                    html = renderWinLoseView('lose');
+                    break;
+                case 'highscores':
+                    html = renderHighScoresView();
+                    break;
+                case 'developer':
+                    html = renderDeveloperView();
+                    break;
+                default:
+                    html = renderStartView();
+            }
+        }
+        
+        appEl.innerHTML = html;
+        
+        // Ensure that the timer display is always updated
+        const timerEl = document.getElementById('timer-value');
+        if (timerEl) {
+            const minutes = Math.floor(state.timer / 60);
+            const seconds = state.timer % 60;
+            timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+    }
+
+    // Initialize Firebase and start listening for auth state changes
+    document.addEventListener('DOMContentLoaded', setupFirebaseAndAuth);
+
+    // Expose functions globally for HTML onclick attributes
+    window.handleCardClick = handleCardClick;
+    window.setView = setView;
+    window.startGame = startGame;
+    window.handleStartClick = handleStartClick;
+    window.toggleMusic = toggleMusic; // Expose new music toggle function
+
+</script>
+</body>
+</html>
